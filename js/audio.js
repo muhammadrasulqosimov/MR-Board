@@ -1,14 +1,15 @@
 import { Store } from './store.js';
 import { Events } from './events.js';
 import { showToast } from './utils.js';
+import { RTC } from './rtc.js'; // RTC modulini ulaymiz
 
 let audioStream = null;
-let audioCtx = null; // Kontekstni global saqlaymiz
+let audioCtx = null;
 
 export const AudioSystem = {
     async init() {
         try {
-            // Samsung va boshqa brauzerlar uchun ruxsat so'rash
+            // Samsung va mobil brauzerlar uchun maxsus parametrlar
             audioStream = await navigator.mediaDevices.getUserMedia({ 
                 audio: { 
                     echoCancellation: true, 
@@ -17,27 +18,25 @@ export const AudioSystem = {
                 } 
             });
 
+            // PeerJS ni ishga tushiramiz
+            RTC.init(Store.uid);
+
             if (Store.perms.speak) Store.micActive = true;
             
             this.sync();
             this.visualizer();
             Events.emit('mic');
         } catch (e) { 
-            console.error("Audio Init Error:", e);
-            showToast("Mikrofon topilmadi yoki ruxsat berilmadi", "warning"); 
+            console.error("Mikrofon xatosi:", e);
+            showToast("Mikrofonni ulab bo'lmadi", "warning"); 
         }
     },
 
     visualizer() {
-        // AudioContext faqat bir marta yaratilishi kerak
-        if (!audioCtx) {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        }
-
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         const analyser = audioCtx.createAnalyser();
         const source = audioCtx.createMediaStreamSource(audioStream);
         source.connect(analyser);
-        
         analyser.fftSize = 128;
         const data = new Uint8Array(analyser.frequencyBinCount);
 
@@ -45,23 +44,18 @@ export const AudioSystem = {
             requestAnimationFrame(draw);
             const bars = document.querySelectorAll('.viz-bar');
             
-            // Agar mikrofon o'chiq bo'lsa yoki ruxsat bo'lmasa, barlarni pasaytiramiz
             if (!(Store.perms.speak && Store.micActive)) {
                 bars.forEach(b => b.style.height = '4px');
                 return;
             }
 
-            // Samsungda kontekst "suspended" bo'lib qolgan bo'lsa, uni uyg'otamiz
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
-            }
+            // Samsung AudioContext Resume
+            if (audioCtx.state === 'suspended') audioCtx.resume();
 
             analyser.getByteFrequencyData(data);
             let sum = 0;
             for (let i = 0; i < data.length; i++) sum += data[i];
             const avg = sum / data.length;
-            
-            // Ovoz balandligiga qarab barlarni chiqarish
             const h = Math.min(20, 4 + (avg / 128) * 16);
             bars.forEach((b, i) => {
                 b.style.height = `${Math.max(4, h * Math.sin((i / 6) * Math.PI))}px`;
@@ -78,20 +72,23 @@ export const AudioSystem = {
 
     async toggle() {
         if (!Store.perms.speak) { 
-            showToast("Mikrofon ruxsati yo'q", "error"); 
+            showToast("Sizga ruxsat berilmagan", "error"); 
             return; 
         }
 
-        // Samsung muammosini hal qilish uchun har safar toggleda resume qilamiz
-        if (audioCtx && audioCtx.state === 'suspended') {
-            await audioCtx.resume();
-        }
+        // Samsungda click orqali AudioContextni uyg'otish shart
+        if (audioCtx && audioCtx.state === 'suspended') await audioCtx.resume();
 
         Store.micActive = !Store.micActive;
         this.sync();
+
+        // Agar mikrofon yoqilsa, ovozni tarqatishni boshlaymiz
+        if (Store.micActive) {
+            RTC.broadcastStream(audioStream);
+            showToast("Mikrofon yoqildi", "success");
+        }
+
         Events.emit('mic');
-        
-        // Tebranish effekti (Samsung va Android qurilmalar uchun)
         if (navigator.vibrate) navigator.vibrate(20);
     }
 };
